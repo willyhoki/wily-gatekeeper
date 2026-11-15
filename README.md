@@ -23,13 +23,19 @@ field checks in trap-encyclopedia order (`lib/decide.js`):
 | 6 | `amount > max_transfer` | `REJECT / AMOUNT_OVERFLOW` |
 | 7 | all checks pass | see proof confirmation below |
 
-If all field checks pass, the agent confirms the incoming proof via
-**Kurier** (`GET /job-status/{API_KEY}/{proof_tx}`) and only then approves.
-If the proof cannot be confirmed (no `KURIER_API_KEY`, Kurier unreachable,
-or the reference is not a Finalized/IncludedInBlock job) it **fails closed**
-and returns `REJECT / PROOF_NOT_CONFIRMED` instead of approving blind.
-`PROOF_NOT_CONFIRMED` is not one of the 7 documented codes; it is only used
-on this fail-closed path.
+If all field checks pass, the agent approves and returns a local Groth16
+decision proof (generated with the event circuit, re-verified locally
+before sending; the platform re-verifies it against its own registered
+VK). **2026-11-15 fix (Round 3):** the agent used to gate APPROVE on a
+Kurier lookup `GET /job-status/{API_KEY}/{proof_tx}`, treating `proof_tx`
+as a Kurier jobId. That can never succeed — a Kurier jobId is a UUID
+(e.g. `23382e04-3d57-11f0-af7b-32a805cdbfd3`, per the official Kurier
+docs), while the platform's `proof_tx` is a 0x-hex hash (event-page
+sample `0xa4c1...8ff1`) — so every valid task fail-closed to
+`REJECT / PROOF_NOT_CONFIRMED` (-3 each), which is exactly the one wrong
+REJECT seen in Round 3. The event rules define only the 7 field checks,
+so the Kurier gate was removed; `PROOF_NOT_CONFIRMED` is now only used
+for malformed input / unsupported types, never to block a valid task.
 
 On `APPROVE` the agent also generates a local **Groth16** decision proof
 with `snarkjs` and the event circuit, and includes it in the response
@@ -84,7 +90,7 @@ Environment variables:
 | `PORT` | no (default `3000`) | listen port |
 | `AGENT_GAMES_HMAC_SECRET` | **yes** (unless `ALLOW_UNSIGNED=1`) | HMAC secret from the Agent Games dashboard ("Rotate Secret"). Never a local placeholder. |
 | `ALLOW_UNSIGNED` | no | `1` = accept unsigned tasks. **Local testing only.** |
-| `KURIER_API_KEY` | **yes, for approvals** | Kurier mainnet API key. Without it the agent fails closed and never approves. |
+| `KURIER_API_KEY` | no (optional) | Kurier mainnet API key. Only for the optional fire-and-forget submit-proof of our own decision proof. NOT needed for APPROVE since the 2026-11-15 fix. |
 | `KURIER_API_URL` | no (default `https://api.kurier.xyz/api/v1`) | Kurier base URL |
 | `VK_HASH` | no (default = gatekeeper vkHash above) | circuit vkHash included in responses |
 | `WASM_PATH` / `ZKEY_PATH` | no (default `circuits/...`) | circuit artifacts |

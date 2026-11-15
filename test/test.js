@@ -4,10 +4,10 @@
 // no KURIER_API_KEY) and POSTs the sample payload + one mutated variant per
 // trap type. Prints PASS/FAIL per case and exits non-zero on any failure.
 //
-// NOTE on the VALID case: with no KURIER_API_KEY the server FAILS CLOSED and
-// returns REJECT/PROOF_NOT_CONFIRMED even though the fields are valid. That
-// is the intended behaviour (do not approve an unconfirmed proof). The pure
-// field logic for the valid case is asserted separately via decide() directly.
+// NOTE on the VALID case: since 2026-11-15 (Round 3 fix) the agent no
+// longer gates APPROVE on Kurier confirmation — proof_tx is a 0x-hex hash,
+// not a Kurier jobId (UUID), so that lookup could never succeed. A valid
+// task now APPROVEs with a locally generated + verified Groth16 proof.
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -118,9 +118,9 @@ async function main() {
     ['http: amount overflow (1500 > max 1000) -> REJECT/AMOUNT_OVERFLOW',
       (() => { const t = clone(BASE); t.input.amount = '1500'; return t; })(),
       ['REJECT', 'AMOUNT_OVERFLOW']],
-    ['http: valid fields, no Kurier key -> fail-closed REJECT/PROOF_NOT_CONFIRMED',
+    ['http: valid fields -> APPROVE/VALID_CONDITION (Kurier gate removed 2026-11-15)',
       clone(BASE),
-      ['REJECT', 'PROOF_NOT_CONFIRMED']],
+      ['APPROVE', 'VALID_CONDITION']],
   ];
 
   for (const [name, task, want] of cases) {

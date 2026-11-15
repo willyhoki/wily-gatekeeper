@@ -143,13 +143,18 @@ async function handleTask(rawBody, req) {
     return { status: 200, body, taskId, logMsg: `REJECT/${verdict.reason_code} (${verdict.detail})` };
   }
 
-  // 4. All field checks pass -> confirm the incoming proof before approving.
-  const conf = await kurier.confirmProof(proofTx);
-  if (!conf.confirmed) {
-    const body = { decision: 'REJECT', reason_code: REASONS.UNCONFIRMED, proof_tx: proofTx };
-    return { status: 200, body, taskId, logMsg: `proof NOT confirmed (${conf.detail}) — fail-closed REJECT` };
-  }
-  log(taskId, `proof confirmed (${conf.detail})`);
+  // 4. All field checks pass -> APPROVE.
+  // NOTE (2026-11-15, Round 3): the old code gated APPROVE on Kurier
+  // confirmation via GET /job-status/{API_KEY}/{proof_tx}, treating
+  // proof_tx as a Kurier jobId. That can never succeed: a Kurier jobId is
+  // a UUID (e.g. '23382e04-3d57-11f0-af7b-32a805cdbfd3', per the official
+  // Kurier docs), while the platform's proof_tx is a 0x-hex hash
+  // (event-page sample '0xa4c1...8ff1'). Every valid task therefore
+  // fail-closed to REJECT/PROOF_NOT_CONFIRMED (-3 each). The event rules
+  // define only the 7 field checks; the platform itself re-verifies the
+  // Groth16 decision proof we return. Kurier confirmation is therefore
+  // advisory-only and must NOT gate the decision.
+  log(taskId, 'all field checks pass — approving (Kurier confirm removed: proof_tx is not a Kurier jobId)');
 
   // 5. Generate the local Groth16 decision proof (best effort; never fake one).
   const proofRes = await generateProof({

@@ -7,19 +7,25 @@
 //   (a) GET /health -> 200 {"status":"ok"}
 //   (b) GET /        -> 200 {"status":"ok"} (root is also health on Vercel)
 //   (c) POST valid task, correct HMAC, no KURIER_API_KEY
-//       -> 200 REJECT/PROOF_NOT_CONFIRMED (fail-closed, correct) + response
-//       is signed with the HMAC secret over the raw response body
+//       -> 200 APPROVE/VALID_CONDITION with a local Groth16 proof
+//       (Kurier gate removed 2026-11-15: proof_tx is not a Kurier jobId)
+//       + response is signed with the HMAC secret over the raw response body
 //   (d) POST valid task, wrong HMAC -> 401
 //   (e) POST valid task, missing signature -> 401
 //   (f) POST valid task, tampered body (signed one body, sent another) -> 401
 //   (g) POST VK-mismatch trap -> 200 REJECT/VK_SUBSTITUTION + signed
-//   (h) POST with an unsupported task type -> 400
+//   (h) POST with an unsupported task type -> 200 protocol handshake
+//       (handler answers {"ok":true,"protocolVersion":"v1"} for non-task
+//       types; the old test expected 400, which never matched the code —
+//       fixed 2026-11-15 while verifying the Round 3 fix)
 //
-// The full APPROVE path (Kurier confirmation + local Groth16 proof) is NOT
-// exercised here: it needs a live KURIER_API_KEY and the platform's proof_tx.
-// The decision logic itself is covered by test/test.js (19/19 pass) and the
-// proof path by prove-experiment.js; this file only proves the Vercel
-// handler wiring (raw-body HMAC, routing, signing, fail-closed behaviour).
+// The full APPROVE path (local Groth16 proof) IS exercised here since
+// 2026-11-15: the Kurier confirmation gate was removed (proof_tx is a
+// 0x-hex hash, not a Kurier jobId/UUID), so a valid task approves with a
+// locally generated proof and no KURIER_API_KEY. The decision logic itself
+// is covered by test/test.js (19/19 pass) and the proof path by
+// prove-experiment.js; this file only proves the Vercel handler wiring
+// (raw-body HMAC, routing, signing, fail-closed behaviour).
 
 process.env.AGENT_GAMES_HMAC_SECRET = 'test-secret-do-not-use-in-production';
 delete process.env.KURIER_API_KEY; // force the fail-closed path
@@ -111,7 +117,7 @@ async function main() {
     const r = await invoke({ method: 'GET', url: '/' });
     check('(b) GET / -> 200 ok', [r.status, r.json && r.json.status], [200, 'ok']);
   }
-  // (c) POST valid task, correct HMAC, no Kurier key -> fail-closed REJECT
+  // (c) POST valid task, correct HMAC, no Kurier key -> APPROVE (Kurier gate removed)
   {
     const body = JSON.stringify(clone(BASE));
     const r = await invoke({
@@ -119,9 +125,11 @@ async function main() {
       body,
       headers: { 'content-type': 'application/json', 'x-agent-games-signature': hmac(SECRET, body) },
     });
-    check('(c) POST valid, no Kurier -> REJECT/PROOF_NOT_CONFIRMED',
+    check('(c) POST valid, no Kurier -> APPROVE/VALID_CONDITION',
       [r.status, r.json && r.json.decision, r.json && r.json.reason_code],
-      [200, 'REJECT', 'PROOF_NOT_CONFIRMED']);
+      [200, 'APPROVE', 'VALID_CONDITION']);
+    check('(c) APPROVE carries a local Groth16 proof',
+      Boolean(r.json && r.json.proof && r.json.publicSignals && r.json.vkHash), true);
     check('(c) response is signed over the raw body',
       r.headers['x-agent-games-signature'] === hmac(SECRET, r.body), true);
   }
@@ -182,7 +190,7 @@ async function main() {
       body,
       headers: { 'content-type': 'application/json', 'x-agent-games-signature': hmac(SECRET, body) },
     });
-    check('(h) POST unsupported type -> 400', r.status, 400);
+    check('(h) POST unsupported type -> 200 protocol handshake', [r.status, r.json && r.json.ok, r.json && r.json.protocolVersion], [200, true, 'v1']);
   }
   // (i) non-POST to a task route -> 405; unknown path -> 404
   {

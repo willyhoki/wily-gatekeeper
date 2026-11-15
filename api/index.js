@@ -1,9 +1,8 @@
 // api/index.js — Proof Gatekeeper agent as a Vercel Serverless Function.
 //
 // Same decision flow as server.js (HMAC verify over the RAW body -> 7 trap
-// checks in lib/decide.js -> Kurier proof confirmation -> local Groth16
-// decision proof -> signed response), adapted for Vercel's stateless,
-// serverless runtime:
+// checks in lib/decide.js -> local Groth16 decision proof -> signed
+// response), adapted for Vercel's stateless, serverless runtime:
 //
 //   * No listening socket: Vercel invokes `module.exports` per request.
 //   * Raw body: read from the request stream (NOT req.body). Vercel's Node
@@ -14,12 +13,18 @@
 //     between warm invocations of the same instance only.
 //   * No ALLOW_UNSIGNED: an HMAC secret is mandatory. If it is missing the
 //     function fails closed (401) instead of starting.
+//   * Kurier confirmation does NOT gate APPROVE (fixed 2026-11-15, Round 3):
+//     proof_tx is a 0x-hex hash, not a Kurier jobId (UUID), so a job-status
+//     lookup can never confirm it. The 7 field checks + the local Groth16
+//     proof (re-verified by the platform) are the decision evidence.
 //
 // Env vars (set in the Vercel dashboard, never committed):
 //   AGENT_GAMES_HMAC_SECRET  REQUIRED — from the Agent Games dashboard
 //                            ("Rotate Secret").
-//   KURIER_API_KEY           Kurier mainnet API key. Without it the agent
-//                            fails closed (never approves) — same as server.js.
+//   KURIER_API_KEY           Kurier mainnet API key. Only used for the
+//                            optional fire-and-forget submit-proof of our own
+//                            local decision proof (SUBMIT_PROOF_TO_KURIER=1).
+//                            NOT required for APPROVE since 2026-11-15.
 //   KURIER_API_URL           Kurier base URL (default https://api.kurier.xyz/api/v1)
 //   VK_HASH                  gatekeeper circuit vkHash (default from
 //                            /api/circuit-info)
@@ -36,9 +41,8 @@
 //   anything else              -> 405 / 404
 //
 // Vercel Hobby limit is 10s per invocation. Worst case here is roughly:
-// cold start (~1-2s) + Kurier confirm (~1-2s) + Groth16 fullProve (~1.2s)
-// + local verify (~0.5s) — comfortably inside the limit. No extra slow
-// work is added on this path.
+// cold start (~1-2s) + Groth16 fullProve (~1.2s) + local verify (~0.5s)
+// — comfortably inside the limit. No extra slow work is added on this path.
 
 const path = require('path');
 const { verifyHmac, signBody } = require('../lib/hmac');
@@ -196,13 +200,19 @@ async function handleTask(rawBody, req, res) {
     return { taskId, logMsg: `REJECT/${verdict.reason_code} (${verdict.detail})` };
   }
 
-  // 4. All field checks pass -> confirm the incoming proof before approving.
-  const conf = await kurier.confirmProof(proofTx);
-  if (!conf.confirmed) {
-    sendSigned(res, 200, { decision: 'REJECT', reason_code: REASONS.UNCONFIRMED, proof_tx: proofTx });
-    return { taskId, logMsg: `proof NOT confirmed (${conf.detail}) — fail-closed REJECT` };
-  }
-  log(taskId, `proof confirmed (${conf.detail})`);
+  // 4. All field checks pass -> APPROVE.
+  // NOTE (2026-11-15, Round 3): the old code gated APPROVE on Kurier
+  // confirmation via GET /job-status/{API_KEY}/{proof_tx}, treating
+  // proof_tx as a Kurier jobId. That can never succeed: a Kurier jobId is
+  // a UUID (e.g. '23382e04-3d57-11f0-af7b-32a805cdbfd3', per the official
+  // Kurier docs), while the platform's proof_tx is a 0x-hex hash
+  // (event-page sample '0xa4c1...8ff1'). Every valid task therefore
+  // fail-closed to REJECT/PROOF_NOT_CONFIRMED (-3 each) — exactly the
+  // one wrong REJECT seen in Round 3. The event rules define only the
+  // 7 field checks; the platform itself re-verifies the Groth16 decision
+  // proof we return. Kurier confirmation is therefore advisory-only and
+  // must NOT gate the decision. The local proof below is the evidence.
+  log(taskId, 'all field checks pass — approving (Kurier confirm removed: proof_tx is not a Kurier jobId)');
 
   // 5. Generate the local Groth16 decision proof (best effort; never fake one).
   const proofRes = await generateProof({
