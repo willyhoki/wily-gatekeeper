@@ -143,13 +143,18 @@ async function handleTask(rawBody, req, res) {
   try {
     envelope = JSON.parse(rawBody.toString('utf8'));
   } catch (e) {
-    sendSigned(res, 400, { error: 'invalid JSON' });
-    return { taskId: null, logMsg: 'JSON parse failed' };
+    // HMAC already passed, so the body is authentic — but it is not a task
+    // (e.g. the platform's preflight probe sends an empty/non-task body).
+    // A preflight only needs HTTP 200, so answer 200 REJECT, not 400.
+    sendSigned(res, 200, { decision: 'REJECT', reason_code: REASONS.UNCONFIRMED, proof_tx: '' });
+    return { taskId: null, logMsg: 'JSON parse failed (preflight/non-task body) — 200 REJECT' };
   }
   const taskId = envelope.task_id || (envelope.input && envelope.task_id) || null;
   if (envelope.type && envelope.type !== 'agent-games.proof-gatekeeper.v1') {
-    sendSigned(res, 400, { error: 'unsupported task type', decision: 'REJECT', reason_code: REASONS.UNCONFIRMED });
-    return { taskId, logMsg: `unsupported type ${envelope.type}` };
+    // Same: a signed request whose type is not a gatekeeper task (e.g. the
+    // platform's preflight probe) must still get HTTP 200, not 400.
+    sendSigned(res, 200, { decision: 'REJECT', reason_code: REASONS.UNCONFIRMED, proof_tx: String(envelope.proof_tx || '') });
+    return { taskId, logMsg: `unsupported type ${envelope.type} — 200 REJECT` };
   }
   const input = envelope.input || envelope;
   const taskInput = { ...input, task_id: input.task_id || taskId || '' };
