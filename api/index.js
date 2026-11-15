@@ -138,23 +138,35 @@ async function handleTask(rawBody, req, res) {
     return { taskId: null, logMsg: 'HMAC verification failed — rejected before parsing' };
   }
 
-  // 2. Parse.
+  // 2. Parse. A signed request that is NOT a gatekeeper task is the
+  // platform's preflight/protocol probe. It must be answered with the
+  // signed protocol-v1 handshake {"ok":true,"protocolVersion":"v1"} —
+  // NOT with a task decision and NOT with a 4xx. (The diagnostic says:
+  // "Return signed protocol-v1 JSON — {"ok":true,"protocolVersion":"v1"}
+  // — with a valid x-agent-games-signature header computed from your
+  // HMAC secret.")
   let envelope;
   try {
     envelope = JSON.parse(rawBody.toString('utf8'));
   } catch (e) {
-    // HMAC already passed, so the body is authentic — but it is not a task
-    // (e.g. the platform's preflight probe sends an empty/non-task body).
-    // A preflight only needs HTTP 200, so answer 200 REJECT, not 400.
-    sendSigned(res, 200, { decision: 'REJECT', reason_code: REASONS.UNCONFIRMED, proof_tx: '' });
-    return { taskId: null, logMsg: 'JSON parse failed (preflight/non-task body) — 200 REJECT' };
+    // Not JSON (e.g. empty preflight body) — answer the handshake.
+    sendSigned(res, 200, { ok: true, protocolVersion: 'v1' });
+    return { taskId: null, logMsg: 'non-JSON body — protocol handshake' };
   }
   const taskId = envelope.task_id || (envelope.input && envelope.task_id) || null;
+  const inputForType = envelope.input || envelope;
+  const hasTaskFields = Boolean(
+    inputForType.task_id || inputForType.proof_tx || inputForType.registered_vk
+  );
   if (envelope.type && envelope.type !== 'agent-games.proof-gatekeeper.v1') {
-    // Same: a signed request whose type is not a gatekeeper task (e.g. the
-    // platform's preflight probe) must still get HTTP 200, not 400.
-    sendSigned(res, 200, { decision: 'REJECT', reason_code: REASONS.UNCONFIRMED, proof_tx: String(envelope.proof_tx || '') });
-    return { taskId, logMsg: `unsupported type ${envelope.type} — 200 REJECT` };
+    // A different type (e.g. the preflight probe) — handshake, not a task.
+    sendSigned(res, 200, { ok: true, protocolVersion: 'v1' });
+    return { taskId, logMsg: `non-task type ${envelope.type} — protocol handshake` };
+  }
+  if (!envelope.type && !hasTaskFields) {
+    // No type and no task fields — a preflight probe, not a task.
+    sendSigned(res, 200, { ok: true, protocolVersion: 'v1' });
+    return { taskId, logMsg: 'no task fields — protocol handshake' };
   }
   const input = envelope.input || envelope;
   const taskInput = { ...input, task_id: input.task_id || taskId || '' };
