@@ -86,13 +86,27 @@ function log(taskId, msg, extra) {
 // Read the RAW request body as a Buffer. Handles three cases:
 //   1. req.body already a Buffer/string (some runtimes pre-buffer) — use it.
 //   2. req is a readable stream (normal Vercel Node case) — collect chunks.
-//   3. req.body already parsed into an object — raw bytes are unrecoverable,
-//      so return null and let the caller fail closed (we must never verify
-//      an HMAC over a re-serialized body: key order/whitespace may differ).
+//   3. req.body already parsed into an object — Vercel pre-parses JSON
+//      bodies and the `bodyParser: false` config is not honoured for this
+//      plain Serverless Function, so the exact raw bytes are unrecoverable.
+//      FALLBACK: re-serialize with JSON.stringify. This reproduces the
+//      original bytes ONLY if the platform sent compact JSON (no spaces)
+//      with keys in the same order JSON.parse preserved — which is the
+//      common case (the platform's preflight/task payloads are compact).
+//      If the re-serialized bytes differ, HMAC verification fails closed
+//      (401) rather than accepting a wrong body. This fallback is what
+//      makes the endpoint work on Vercel at all; the stream path (case 2)
+//      is still preferred whenever the runtime leaves the body unparsed.
 async function readRawBody(req) {
   if (Buffer.isBuffer(req.body)) return req.body;
   if (typeof req.body === 'string') return Buffer.from(req.body, 'utf8');
-  if (req.body !== undefined && req.body !== null) return null; // pre-parsed object
+  if (req.body !== undefined && req.body !== null) {
+    try {
+      return Buffer.from(JSON.stringify(req.body), 'utf8');
+    } catch {
+      return null;
+    }
+  }
   const chunks = [];
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   return Buffer.concat(chunks);
