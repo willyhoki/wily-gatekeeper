@@ -1,0 +1,1 @@
+{"$schema":"https://openapi.vercel.sh/vercel.json","framework":null,"functions":{"api/index.js":{"maxDuration":10}},"rewrites":[{"destination":"/api/index","source":"/health"},{"destination":"/api/index","source":"/healthz"},{"destination":"/api/index","source":"/agent"},{"destination":"/api/index","source":"/task"},{"destination":"/api/index","source":"/"}]}
