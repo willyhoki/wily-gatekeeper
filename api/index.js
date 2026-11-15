@@ -209,6 +209,15 @@ async function handleTask(rawBody, req, res) {
 
 // Vercel Serverless Function entrypoint (CommonJS — package.json has no
 // "type": "module", and lib/* are CommonJS).
+//
+// CRITICAL: Vercel pre-parses JSON request bodies into req.body by default.
+// That destroys the raw bytes the platform signed, so HMAC verification
+// would always fail closed with "raw body unavailable" (HTTP 401). The
+// config below disables the body parser so the handler receives the raw
+// request stream and can verify the HMAC over the exact signed bytes
+// (same requirement as a Stripe webhook signature).
+module.exports.config = { api: { bodyParser: false } };
+
 module.exports = async (req, res) => {
   try {
     const url = req.url || '/';
